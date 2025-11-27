@@ -19,6 +19,12 @@ docker ps
 Get-Content clickhouse/init.sql | docker exec -i clickhouse clickhouse-client --user=default --password=password123 --multiquery
 ```
 
+
+This adds:
+- TTL-based data retention (90 days)
+- Materialized views for faster queries
+- Advanced analytical views
+
 ### 4. Verify Data Flow
 
 **Check Kafka messages:**
@@ -63,6 +69,18 @@ docker exec clickhouse clickhouse-client --user=default --password=password123 -
 
 ## Useful Tables for Dashboards
 
+**For Best Performance (Recommended):**
+- `retail.daily_sales_summary` - Pre-aggregated daily metrics (fastest!)
+- `retail.hourly_sales_summary` - Real-time hourly tracking
+- `retail.product_performance_summary` - Product-level stats
+
+**For Analysis:**
+- `retail.sales_anomaly_detection` - Detect unusual patterns
+- `retail.return_rate_analysis` - Return rates by product
+- `retail.store_performance_comparison` - Store comparisons
+- `retail.peak_hours_by_day` - Traffic patterns
+
+**Original Views:**
 - `retail.retail_events_unified` - All events (real-time + historical)
 - `retail.sales_by_category` - Aggregated by category
 - `retail.sales_by_store` - Aggregated by store  

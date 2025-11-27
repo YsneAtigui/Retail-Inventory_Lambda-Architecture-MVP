@@ -153,3 +153,119 @@ FROM retail_events_unified
 WHERE transaction_type = 'SALE'
 GROUP BY product_id, category
 ORDER BY total_revenue DESC;
+
+-- ========================================
+-- PERFORMANCE ENHANCEMENTS
+-- ========================================
+
+-- 1. Add TTL to real-time table (keep only 90 days)
+ALTER TABLE retail_events_realtime 
+MODIFY TTL event_time + INTERVAL 90 DAY;
+
+-- 2. Create daily sales summary materialized view
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_sales_summary
+ENGINE = SummingMergeTree()
+ORDER BY (date, store_id, category)
+AS SELECT
+    toDate(event_time) as date,
+    store_id,
+    category,
+    transaction_type,
+    count() as transaction_count,
+    sum(quantity) as total_quantity,
+    sum(quantity * unit_price) as total_revenue
+FROM retail_events_realtime
+WHERE transaction_type = 'SALE'
+GROUP BY date, store_id, category, transaction_type;
+
+-- 3. Create hourly sales summary for real-time monitoring
+CREATE MATERIALIZED VIEW IF NOT EXISTS hourly_sales_summary
+ENGINE = SummingMergeTree()
+ORDER BY (hour, store_id, category)
+AS SELECT
+    toStartOfHour(event_time) as hour,
+    store_id,
+    category,
+    count() as transaction_count,
+    sum(quantity) as total_quantity,
+    sum(quantity * unit_price) as total_revenue
+FROM retail_events_realtime
+WHERE transaction_type = 'SALE'
+GROUP BY hour, store_id, category;
+
+-- 4. Create product performance summary
+CREATE MATERIALIZED VIEW IF NOT EXISTS product_performance_summary
+ENGINE = SummingMergeTree()
+ORDER BY (product_id, category, transaction_type)
+AS SELECT
+    product_id,
+    category,
+    transaction_type,
+    count() as transaction_count,
+    sum(quantity) as total_quantity,
+    sum(quantity * unit_price) as total_revenue,
+    avg(unit_price) as avg_unit_price
+FROM retail_events_realtime
+GROUP BY product_id, category, transaction_type;
+
+-- ========================================
+-- ADVANCED ANALYTICAL VIEWS
+-- ========================================
+
+-- 5. Create anomaly detection view
+CREATE VIEW IF NOT EXISTS sales_anomaly_detection AS
+SELECT 
+    category,
+    toStartOfHour(event_time) as hour,
+    sum(quantity * unit_price) as hourly_revenue,
+    avg(sum(quantity * unit_price)) OVER (PARTITION BY category ORDER BY toStartOfHour(event_time) ROWS BETWEEN 24 PRECEDING AND CURRENT ROW) as moving_avg_24h,
+    stddevPop(sum(quantity * unit_price)) OVER (PARTITION BY category ORDER BY toStartOfHour(event_time) ROWS BETWEEN 24 PRECEDING AND CURRENT ROW) as std_dev_24h
+FROM retail_events_realtime
+WHERE transaction_type = 'SALE'
+  AND event_time >= now() - INTERVAL 7 DAY
+GROUP BY category, hour
+ORDER BY hour DESC;
+
+-- 6. Create return rate analysis view
+CREATE VIEW IF NOT EXISTS return_rate_analysis AS
+SELECT 
+    category,
+    product_id,
+    countIf(transaction_type = 'SALE') as sales_count,
+    countIf(transaction_type = 'RETURN') as return_count,
+    return_count / nullIf(sales_count, 0) * 100 as return_rate_pct,
+    sum(if(transaction_type = 'SALE', quantity * unit_price, 0)) as total_sales_revenue,
+    sum(if(transaction_type = 'RETURN', quantity * unit_price, 0)) as total_return_value
+FROM retail_events_unified
+GROUP BY category, product_id
+HAVING sales_count > 0
+ORDER BY return_rate_pct DESC;
+
+-- 7. Create store performance comparison view
+CREATE VIEW IF NOT EXISTS store_performance_comparison AS
+SELECT 
+    store_id,
+    toDate(event_time) as date,
+    countIf(transaction_type = 'SALE') as sales_transactions,
+    countIf(transaction_type = 'RETURN') as return_transactions,
+    sum(if(transaction_type = 'SALE', quantity * unit_price, 0)) as daily_revenue,
+    avg(if(transaction_type = 'SALE', quantity * unit_price, 0)) as avg_transaction_value,
+    sum(quantity) as total_items_moved
+FROM retail_events_unified
+WHERE toDate(event_time) >= today() - INTERVAL 30 DAY
+GROUP BY store_id, date
+ORDER BY date DESC, daily_revenue DESC;
+
+-- 8. Create peak hours identification view
+CREATE VIEW IF NOT EXISTS peak_hours_by_day AS
+SELECT 
+    toDayOfWeek(event_time) as day_of_week,
+    toHour(event_time) as hour,
+    count() as transaction_count,
+    sum(quantity * unit_price) as revenue,
+    avg(quantity * unit_price) as avg_basket_value
+FROM retail_events_unified
+WHERE transaction_type = 'SALE'
+  AND toDate(event_time) >= today() - INTERVAL 30 DAY
+GROUP BY day_of_week, hour
+ORDER BY transaction_count DESC;

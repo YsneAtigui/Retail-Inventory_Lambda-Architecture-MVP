@@ -208,37 +208,41 @@ Kafka → Spark Streaming → MinIO (Parquet) → ClickHouse S3 Engine
 - **Component**: PySpark streaming job
 - **Location**: `spark/batch_processor.py`
 - **Trigger**: Manual or Daily (via Airflow DAG)
-- **Function**: Read from Kafka, transform, write to MinIO
+- **Function**: Read from Kafka, enrich, validate, partition, write to MinIO
 
+**Data Enrichment:**
 ```python
-# Spark reads from Kafka
-kafka_df = spark.readStream \
-    .format("kafka") \
-    .option("kafka.bootstrap.servers", "kafka:29092") \
-    .option("subscribe", "retail_events") \
-    .option("startingOffsets", "earliest") \
-    .load()
+# Spark automatically adds:
+- revenue = quantity * unit_price
+- year, month, day (from event_time)
+- hour_of_day (0-23)
+- day_of_week (1-7, 1=Sunday)
+- is_weekend (boolean)
+```
 
-# Writes to MinIO as Parquet
-processed_df.writeStream \
-    .format("parquet") \
-    .option("path", "s3a://retail-lake/") \
-    .option("checkpointLocation", "/tmp/checkpoint/retail-lake") \
-    .trigger(processingTime="30 seconds") \
-    .start()
+**Data Validation:**
+- Filters out quantity <= 0
+- Filters out unit_price <= 0
+- Ensures data quality
+
+**Partitioning Strategy:**
+```python
+# Partition by date for efficient queries
+.partitionBy("year", "month", "day")
+.parquet("s3a://retail-lake/")
 ```
 
 #### 2. **Data Lake Storage** (MinIO)
 - **Bucket**: `retail-lake`
 - **Format**: Parquet (columnar, compressed)
-- **Path**: `s3a://retail-lake/*.parquet`
+- **Path Structure**: `s3a://retail-lake/year=2025/month=11/day=27/*.parquet`
 - **S3 Endpoint**: `http://minio:9000`
 - **Credentials**: `minioadmin/minioadmin`
 
 **Parquet Advantages**:
 - Columnar storage (better for analytics)
 - High compression ratio
-- Efficient for large-scale batch queries
+- Partitioned by date for fast range queries
 
 #### 3. **Historical Table** (ClickHouse S3 Engine)
 - **Table**: `retail_events_historical`
@@ -300,63 +304,73 @@ FROM retail_events_historical;
 
 ### Pre-Aggregated Views for Performance
 
-#### 1. **Sales by Category**
+ClickHouse includes materialized views that auto-update as new data arrives, providing instant query results.
+
+#### 1. **Daily Sales Summary** (Materialized View)
 ```sql
-CREATE VIEW sales_by_category AS
-SELECT
+CREATE MATERIALIZED VIEW daily_sales_summary
+ENGINE = SummingMergeTree()
+ORDER BY (date, store_id, category)
+AS SELECT
+    toDate(event_time) as date,
+    store_id,
     category,
     transaction_type,
-    COUNT(*) AS transaction_count,
-    SUM(quantity) AS total_quantity,
-    SUM(quantity * unit_price) AS total_revenue,
-    AVG(unit_price) AS avg_unit_price
-FROM retail_events_unified
+    count() as transaction_count,
+    sum(quantity) as total_quantity,
+    sum(quantity * unit_price) as total_revenue
+FROM retail_events_realtime
 WHERE transaction_type = 'SALE'
-GROUP BY category, transaction_type;
+GROUP BY date, store_id, category, transaction_type;
 ```
+**Use Case**: Historical dashboards, daily reports (50-100x faster than raw data)
 
-#### 2. **Sales by Store**
+#### 2. **Hourly Sales Summary** (Materialized View)
 ```sql
-CREATE VIEW sales_by_store AS
-SELECT
+CREATE MATERIALIZED VIEW hourly_sales_summary
+ENGINE = SummingMergeTree()
+ORDER BY (hour, store_id, category)
+AS SELECT
+    toStartOfHour(event_time) as hour,
     store_id,
-    COUNT(*) AS transaction_count,
-    SUM(quantity) AS total_quantity,
-    SUM(quantity * unit_price) AS total_revenue
-FROM retail_events_unified
-WHERE transaction_type = 'SALE'
-GROUP BY store_id;
-```
-
-#### 3. **Hourly Sales Trend**
-```sql
-CREATE VIEW hourly_sales_trend AS
-SELECT
-    toStartOfHour(event_time) AS hour,
-    COUNT(*) AS transaction_count,
-    SUM(quantity) AS total_quantity,
-    SUM(quantity * unit_price) AS total_revenue
-FROM retail_events_unified
-WHERE transaction_type = 'SALE'
-GROUP BY hour
-ORDER BY hour DESC;
-```
-
-#### 4. **Product Performance**
-```sql
-CREATE VIEW product_performance AS
-SELECT
-    product_id,
     category,
-    COUNT(*) AS transaction_count,
-    SUM(quantity) AS total_quantity,
-    SUM(quantity * unit_price) AS total_revenue,
-    AVG(unit_price) AS avg_unit_price
-FROM retail_events_unified
+    count() as transaction_count,
+    sum(quantity) as total_quantity,
+    sum(quantity * unit_price) as total_revenue
+FROM retail_events_realtime
 WHERE transaction_type = 'SALE'
-GROUP BY product_id, category
-ORDER BY total_revenue DESC;
+GROUP BY hour, store_id, category;
 ```
+**Use Case**: Real-time dashboards, live monitoring
+
+#### 3. **Sales Anomaly Detection** (Analytical View)
+```sql
+CREATE VIEW sales_anomaly_detection AS
+SELECT 
+    category,
+    toStartOfHour(event_time) as hour,
+    sum(quantity * unit_price) as hourly_revenue,
+    avg(sum(quantity * unit_price)) OVER (...) as moving_avg_24h,
+    stddevPop(sum(quantity * unit_price)) OVER (...) as std_dev_24h
+FROM retail_events_realtime
+WHERE transaction_type = 'SALE'
+GROUP BY category, hour;
+```
+**Use Case**: Detect unusual sales patterns, automated alerts
+
+#### 4. **Return Rate Analysis** (Analytical View)
+```sql
+CREATE VIEW return_rate_analysis AS
+SELECT 
+    category,
+    product_id,
+    countIf(transaction_type = 'SALE') as sales_count,
+    countIf(transaction_type = 'RETURN') as return_count,
+    return_count / nullIf(sales_count, 0) * 100 as return_rate_pct
+FROM retail_events_unified
+GROUP BY category, product_id;
+```
+**Use Case**: Quality control, identify problematic products
 
 ---
 

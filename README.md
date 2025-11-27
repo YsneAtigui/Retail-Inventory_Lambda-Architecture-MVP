@@ -85,26 +85,6 @@ docker-compose ps
 
 Wait 2-3 minutes for all services to initialize, then verify:
 
-- **Kafka**: `docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 --list`
-- **MinIO Console**: http://localhost:9001 (minioadmin/minioadmin)
-- **ClickHouse**: http://localhost:8123/ping (should return "Ok.")
-- **Spark Master UI**: http://localhost:8090
-- **Airflow UI**: http://localhost:8081 (admin/admin)
-
-### 3. Initialize ClickHouse Tables
-
-```bash
-# Execute the initialization script
-docker exec -it clickhouse clickhouse-client --user=default --password=password123 --multiquery < clickhouse/init.sql
-
-# Or copy and execute manually
-docker cp clickhouse/init.sql clickhouse:/tmp/init.sql
-docker exec -it clickhouse clickhouse-client --user=default --password=password123 --queries-file=/tmp/init.sql
-```
-
-### 4. Verify Data Flow
-
-```bash
 # Check producer logs
 docker logs -f inventory-producer
 
@@ -146,30 +126,6 @@ docker exec -it clickhouse clickhouse-client --user=default --password=password1
 2. **Get Data → Web**
 
 3. **Use ClickHouse HTTP API**:
-   ```
-   http://localhost:8123/?user=default&password=password123&query=SELECT * FROM retail.retail_events_unified FORMAT JSON
-   ```
-
-4. **Parse JSON response** in Power Query
-
-### Recommended Tables/Views for Power BI
-
-- **`retail_events_unified`**: Combined real-time and historical data
-- **`sales_by_category`**: Aggregated sales by product category
-- **`sales_by_store`**: Aggregated sales by store
-- **`hourly_sales_trend`**: Time-series sales data
-- **`product_performance`**: Top-performing products
-
-## 📁 Project Structure
-
-```
-BigDATA/
-├── docker-compose.yml          # All service definitions
-├── producer/
-│   ├── main.py                 # Kafka producer with Faker
-│   ├── Dockerfile
-│   └── requirements.txt
-├── spark/
 │   └── batch_processor.py      # PySpark batch job
 ├── airflow/
 │   └── dags/

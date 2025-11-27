@@ -62,10 +62,34 @@ def main():
             to_timestamp(col("event_time"), "yyyy-MM-dd HH:mm:ss")
         )
         
-        # Write to MinIO as Parquet
-        print("Writing to MinIO (s3a://retail-lake/)...")
-        query = processed_df.writeStream \
+        # Data enrichment: Add derived metrics and time dimensions
+        print("Enriching data with derived metrics...")
+        from pyspark.sql.functions import dayofweek, hour, when
+        
+        enriched_df = processed_df \
+            .withColumn("revenue", col("quantity") * col("unit_price")) \
+            .withColumn("year", col("event_time").substr(1, 4).cast("int")) \
+            .withColumn("month", col("event_time").substr(6, 2).cast("int")) \
+            .withColumn("day", col("event_time").substr(9, 2).cast("int")) \
+            .withColumn("hour_of_day", hour(col("event_time"))) \
+            .withColumn("day_of_week", dayofweek(col("event_time"))) \
+            .withColumn("is_weekend", 
+                when((dayofweek(col("event_time")) == 1) | 
+                     (dayofweek(col("event_time")) == 7), True).otherwise(False))
+        
+        # Data validation: Filter out invalid records
+        print("Applying data quality checks...")
+        validated_df = enriched_df.filter(
+            (col("quantity") > 0) & 
+            (col("unit_price") > 0) &
+            (col("revenue") > 0)
+        )
+        
+        # Write to MinIO as Parquet with partitioning by date
+        print("Writing to MinIO (s3a://retail-lake/) with date partitioning...")
+        query = validated_df.writeStream \
             .format("parquet") \
+            .partitionBy("year", "month", "day") \
             .option("path", "s3a://retail-lake/") \
             .option("checkpointLocation", "/tmp/checkpoint/retail-lake") \
             .outputMode("append") \
@@ -73,7 +97,9 @@ def main():
             .start()
         
         print("Batch processor is running...")
-        print("Writing data to s3a://retail-lake/ every 30 seconds")
+        print("Writing partitioned data to s3a://retail-lake/ every 30 seconds")
+        print("Partitioning by: year, month, day")
+        print("Enrichments: revenue, time dimensions, is_weekend flag")
         
         # Wait for termination
         query.awaitTermination()
