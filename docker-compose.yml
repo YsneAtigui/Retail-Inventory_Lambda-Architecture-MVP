@@ -110,7 +110,10 @@ services:
 
   # Spark Master
   spark-master:
-    image: apache/spark:3.4.1-scala2.12-java11-python3-ubuntu
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: retail-spark:latest
     container_name: spark-master
     networks:
       - retail-net
@@ -127,6 +130,7 @@ services:
     volumes:
       - spark-master-data:/opt/spark
       - ./spark:/app
+      - ./spark:/opt/airflow/spark
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8080" ]
       interval: 30s
@@ -135,7 +139,7 @@ services:
 
   # Spark Worker
   spark-worker:
-    image: apache/spark:3.4.1-scala2.12-java11-python3-ubuntu
+    image: retail-spark:latest
     container_name: spark-worker
     networks:
       - retail-net
@@ -151,6 +155,7 @@ services:
     volumes:
       - spark-worker-data:/opt/spark
       - ./spark:/app
+      - ./spark:/opt/airflow/spark
 
   # PostgreSQL for Airflow metadata
   postgres:
